@@ -102,6 +102,7 @@ private:
 	object_ptr<Title> _title;
 	object_ptr<IconButton> _previous;
 	object_ptr<IconButton> _next;
+	object_ptr<IconButton> _menuToggle;
 	bool _previousEnabled = false;
 	bool _nextEnabled = false;
 

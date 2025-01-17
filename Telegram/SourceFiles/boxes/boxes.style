@@ -405,6 +405,7 @@ editMediaHintLabel: FlatLabel(defaultFlatLabel) {
 }
 
 calendarTitleHeight: boxTitleHeight;
+calendarSubTitleHeight: 14px;
 calendarPrevious: IconButton {
 	width: calendarTitleHeight;
 	height: calendarTitleHeight;
@@ -419,6 +420,9 @@ calendarPrevious: IconButton {
 calendarPreviousDisabled: icon {{ "calendar_down-flip_vertical", menuIconFg }};
 calendarNext: IconButton(calendarPrevious) {
 	icon: icon {{ "calendar_down", boxTitleFg }};
+}
+calendarMenuToggle: IconButton(calendarPrevious) {
+	icon: icon {{ "title_menu_dots", boxTitleCloseFg }};
 }
 CalendarSizes {
 	width: pixels;

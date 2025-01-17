@@ -8,6 +8,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/boxes/calendar_box.h"
 
 #include "ui/widgets/buttons.h"
+#include "ui/widgets/checkbox.h"
+#include "ui/widgets/popup_menu.h"
 #include "ui/widgets/scroll_area.h"
 #include "ui/effects/ripple_animation.h"
 #include "ui/chat/chat_style.h"
@@ -15,8 +17,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/painter.h"
 #include "ui/cached_round_corners.h"
 #include "lang/lang_keys.h"
+#include "menu/menu_check_item.h"
 #include "styles/style_boxes.h"
 #include "styles/style_chat.h"
+#include "styles/style_info.h"
+
+#include <QCalendar>
 
 namespace Ui {
 namespace {
@@ -75,9 +81,35 @@ public:
 	[[nodiscard]] rpl::producer<QDate> monthValue() const {
 		return _month.value();
 	}
+	struct Range final {
+		int from = 0;
+		int to = 0;
+	};
+	[[nodiscard]] Range subRange() const {
+		return _subRange;
+	}
 
 	[[nodiscard]] QDate dateFromIndex(int index) const;
-	[[nodiscard]] QString labelFromIndex(int index) const;
+
+	[[nodiscard]] std::optional<QCalendar> subCalendar() const {
+		return _subCalendar;
+	}
+	void setSubCalendar(std::optional<QCalendar::System> system) {
+		constexpr auto kDefault = QCalendar::System::Gregorian;
+		_subCalendar = (system.value_or(kDefault) != kDefault)
+			? std::make_optional(QCalendar(*system))
+			: std::nullopt;
+
+		applyMonth(_month.current(), true);
+	}
+
+	struct Label final {
+		int day = 0;
+		QString text;
+		int subday = 0;
+		QString subtext;
+	};
+	[[nodiscard]] Label labelFromIndex(int index) const;
 
 	void toggleSelectionMode(bool enabled);
 	[[nodiscard]] bool selectionMode() const;
@@ -107,6 +139,10 @@ private:
 	QDate _highlighted;
 	Fn<QString(int)> _dayOfWeek;
 	Fn<QString(int, int)> _monthOfYear;
+
+	Range _subRange;
+
+	std::optional<QCalendar> _subCalendar;
 
 	int _highlightedIndex = 0;
 	int _minDayIndex = 0;
@@ -177,6 +213,27 @@ void CalendarBox::Context::applyMonth(const QDate &month, bool forced) {
 	} else {
 		_month = month;
 	}
+	if (const auto calendar = _subCalendar) {
+		const auto parts = calendar->partsFromDate(_month.current());
+		const auto subday = parts.day;
+		const auto subDaysInMonth = calendar->daysInMonth(
+			parts.month,
+			parts.year);
+		if (subday < subDaysInMonth / 2) {
+			_subRange.from = subday - 1;
+			_subRange.to = subDaysInMonth;
+		} else {
+			_subRange.from = subday - subDaysInMonth - 1;
+			const auto nextParts = calendar->partsFromDate(
+				_month.current().addMonths(1));
+			_subRange.to = calendar->daysInMonth(
+				nextParts.month,
+				nextParts.year);
+		}
+	} else {
+		_subRange = {};
+	}
+
 	if (updated) {
 		_selectionUpdates.fire({});
 	}
@@ -266,14 +323,27 @@ QDate CalendarBox::Context::dateFromIndex(int index) const {
 	return QDate(year, month, index + 1);
 }
 
-QString CalendarBox::Context::labelFromIndex(int index) const {
-	auto day = [this, index] {
-		if (index >= 0 && index < daysCount()) {
-			return index + 1;
+CalendarBox::Context::Label CalendarBox::Context::labelFromIndex(
+		int index) const {
+	const auto day = [this, index]() -> Label {
+		if (const auto calendar = _subCalendar) {
+			const auto date = dateFromIndex(index);
+			return Label{
+				.day = date.day(),
+				.subday = calendar->partsFromDate(date).day,
+			};
 		}
-		return dateFromIndex(index).day();
+		if (index >= 0 && index < daysCount()) {
+			return { index + 1 };
+		}
+		return { dateFromIndex(index).day() };
 	};
-	return QString::number(day());
+	auto label = day();
+	label.text = QString::number(label.day);
+	if (label.subday) {
+		label.subtext = QString::number(label.subday);
+	}
+	return label;
 }
 
 void CalendarBox::Context::toggleSelectionMode(bool enabled) {
@@ -596,7 +666,34 @@ void CalendarBox::Inner::paintRows(QPainter &p, QRect clip) {
 					? _styleColors.dayTextGrayedOutColor
 					: _styleColors.dayTextColor)
 				: st::windowSubTextFg);
-			p.drawText(rect, _context->labelFromIndex(index), style::al_center);
+			const auto label = _context->labelFromIndex(index);
+			if (!label.subday) {
+				p.drawText(rect, label.text, style::al_center);
+			} else {
+				const auto offset = rect.height() / 4
+					+ st::ttlItemTimerFont->descent;
+				const auto topHalf = rect - QMargins(0, 0, 0, offset);
+				const auto bottomHalf = rect - QMargins(0, offset, 0, 0);
+
+				p.drawText(topHalf, label.text, style::al_center);
+				const auto subRange = _context->subRange();
+				const auto subIndex = subRange.from + index;
+				const auto subGrayedOut = subIndex < 0
+					|| subIndex >= subRange.to;
+				p.setFont(st::ttlItemTimerFont);
+				p.setPen(selected
+					? st::activeButtonFg
+					: highlighted
+					? (subGrayedOut
+						? _styleColors.dayTextGrayedOutColor
+						: st::dialogsNameFgActive)
+					: enabled
+					? (subGrayedOut
+						? _styleColors.dayTextGrayedOutColor
+						: st::windowActiveTextFg)
+					: st::windowSubTextFg);
+				p.drawText(bottomHalf, label.subtext, style::al_center);
+			}
 		}
 	}
 }
@@ -751,6 +848,8 @@ private:
 	const not_null<Context*> _context;
 
 	QString _text;
+	QString _subText;
+	const int _textTop = 0;
 	int _textWidth = 0;
 	int _textLeft = 0;
 
@@ -764,7 +863,8 @@ CalendarBox::Title::Title(
 : RpWidget(parent)
 , _st(st)
 , _styleColors(styleColors)
-, _context(context) {
+, _context(context)
+, _textTop((st::calendarTitleHeight - st::calendarTitleFont->height) / 2) {
 	const auto dayWidth = st::calendarDaysFont->width(langDayOfWeek(1));
 	_textLeft = _st.padding.left() + (_st.cellSize.width() - dayWidth) / 2;
 
@@ -791,6 +891,21 @@ CalendarBox::Title::Title(
 }
 
 void CalendarBox::Title::setTextFromMonth(QDate month) {
+	if (const auto calendar = _context->subCalendar()) {
+		const auto parts = calendar->partsFromDate(month);
+		_subText = tr::lng_month_year(
+			tr::now,
+			lt_month,
+			calendar->monthName(
+				QLocale(Lang::LanguageIdOrDefault(Lang::Id())),
+				parts.month,
+				parts.year,
+				QLocale::LongFormat),
+			lt_year,
+			QString::number(parts.year));
+	} else if (!_subText.isEmpty()) {
+		_subText = QString();
+	}
 	setText(langMonthOfYearFull(month.month(), month.year()));
 }
 
@@ -807,12 +922,18 @@ void CalendarBox::Title::paintEvent(QPaintEvent *e) {
 
 	p.setFont(st::calendarTitleFont);
 	p.setPen(_styleColors.titleTextColor);
-	p.drawTextLeft(
-		_textLeft,
-		(st::calendarTitleHeight - st::calendarTitleFont->height) / 2,
-		width(),
-		_text,
-		_textWidth);
+	p.drawTextLeft(_textLeft, _textTop, width(), _text, _textWidth);
+
+	if (!_subText.isEmpty()) {
+		p.setFont(st::normalFont);
+		p.setPen(st::windowActiveTextFg);
+		p.drawTextLeft(
+			_textLeft,
+			_textTop + st::normalFont->height + st::normalFont->descent,
+			width(),
+			_subText,
+			_textWidth);
+	}
 
 	paintDayNames(p, clip);
 }
@@ -820,7 +941,9 @@ void CalendarBox::Title::paintEvent(QPaintEvent *e) {
 void CalendarBox::Title::paintDayNames(Painter &p, QRect clip) {
 	p.setFont(st::calendarDaysFont);
 	p.setPen(st::calendarDaysFg);
-	auto y = st::calendarTitleHeight + _st.padding.top();
+	auto y = st::calendarTitleHeight
+		+ _st.padding.top()
+		+ (_context->subCalendar() ? st::calendarSubTitleHeight : 0);
 	auto x = _st.padding.left();
 	if (!myrtlrect(x, y, _st.cellSize.width() * kDaysInWeek, _st.daysHeight).intersects(clip)) {
 		return;
@@ -848,6 +971,7 @@ CalendarBox::CalendarBox(QWidget*, CalendarBoxArgs &&args)
 , _title(this, _context.get(), _st, _styleColors)
 , _previous(this, _styleColors.iconButtonPrevious)
 , _next(this, _styleColors.iconButtonNext)
+, _menuToggle(this, st::calendarMenuToggle)
 , _callback(std::move(args.callback.value()))
 , _finalize(std::move(args.finalize))
 , _jumpTimer([=] { jump(_jumpButton); })
@@ -957,11 +1081,68 @@ void CalendarBox::jump(QPointer<IconButton> button) {
 	_jumpTimer.cancel();
 }
 
+void HandleAdditionalCalendars(
+		not_null<Ui::IconButton*> button,
+		Fn<void(QCalendar::System)> apply) {
+	struct State final {
+		base::unique_qptr<Ui::PopupMenu> menu;
+		rpl::variable<QCalendar::System> system;
+	};
+	const auto state = button->lifetime().make_state<State>();
+	struct Entry final {
+		QCalendar::System system;
+		QString name;
+	};
+	const auto entries = std::array<Entry, 2>{
+		// Entry{ QCalendar::System::Gregorian, "Gregorian" },
+		Entry{ QCalendar::System::Jalali, u"Solar Hijri calendar"_q },
+		Entry{ QCalendar::System::IslamicCivil, u"Islamic Civil calendar"_q },
+	};
+	button->setClickedCallback([=] {
+		state->menu = base::make_unique_q<Ui::PopupMenu>(
+			button,
+			st::popupMenuWithIcons);
+
+		for (const auto &entry : entries) {
+			const auto system = entry.system;
+			auto item = base::make_unique_q<::Menu::ItemWithCheck>(
+				state->menu->menu(),
+				st::popupMenuWithIcons.menu,
+				Ui::Menu::CreateAction(
+					state->menu->menu().get(),
+					entry.name,
+					[] {}),
+				nullptr,
+				nullptr);
+			item->init(false);
+			item->AbstractButton::clicks(
+			) | rpl::start_with_next([=] {
+				state->system = (state->system.current() == system)
+					? QCalendar::System::Gregorian
+					: system;
+				apply(state->system.current());
+			}, item->lifetime());
+			const auto checkView = item->checkView();
+			state->system.value(
+			) | rpl::start_with_next([=](QCalendar::System s) {
+				checkView->setChecked(system == s, anim::type::normal);
+			}, item->lifetime());
+			state->menu->addAction(std::move(item));
+		}
+
+		state->menu->popup(QCursor::pos());
+		return true;
+	});
+}
+
 void CalendarBox::prepare() {
 	_previous->setClickedCallback([=] { goPreviousMonth(); });
 	_next->setClickedCallback([=] { goNextMonth(); });
 
 	_inner->setDateChosenCallback(std::move(_callback));
+	HandleAdditionalCalendars(_menuToggle.data(), [=](QCalendar::System s) {
+		_context->setSubCalendar(s);
+	});
 
 	_context->monthValue(
 	) | rpl::start_with_next([=](QDate month) {
@@ -1080,7 +1261,10 @@ bool CalendarBox::tooltipWindowActive() const {
 void CalendarBox::monthChanged(QDate month) {
 	setDimensions(
 		_st.width,
-		st::calendarTitleHeight + _st.daysHeight + _inner->countMaxHeight());
+		st::calendarTitleHeight
+			+ (_context->subCalendar() ? st::calendarSubTitleHeight : 0)
+			+ _st.daysHeight
+			+ _inner->countMaxHeight());
 
 	_previousEnabled = isPreviousEnabled();
 	_previous->setIconOverride(_previousEnabled
@@ -1118,7 +1302,12 @@ void CalendarBox::resizeEvent(QResizeEvent *e) {
 		- st::calendarPrevious.icon.width();
 	_next->moveToRight(right - shift, 0);
 	_previous->moveToRight(right - shift + _next->width(), 0);
-	const auto title = st::calendarTitleHeight + _st.daysHeight;
+	_menuToggle->moveToRight(
+		right - shift + _next->width() + _previous->width(),
+		0);
+	const auto title = st::calendarTitleHeight
+		+ _st.daysHeight
+		+ (_context->subCalendar() ? st::calendarSubTitleHeight : 0);
 	_title->setGeometryToLeft(0, 0, width(), title);
 	_scroll->setGeometryToLeft(0, title, width(), height() - title);
 	BoxContent::resizeEvent(e);
